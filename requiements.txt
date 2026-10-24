@@ -1,2 +1,5 @@
 streamlit
-pylint
+transformers
+torch
+pypdf
+sentencepiece
