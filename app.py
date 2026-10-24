@@ -3,6 +3,7 @@ import streamlit as st
 from pypdf import PdfReader
 from transformers import pipeline
 import torch
+import io
 
 st.set_page_config(
     page_title="Legal Document Summarizer",
@@ -11,114 +12,120 @@ st.set_page_config(
 )
 
 st.title("⚖️ Legal Document Summarization Assistant")
-st.caption("AI-powered assistance for understanding legal contracts")
+st.write("Upload a legal contract and generate an AI-powered summary.")
 
-st.info(
-    "Upload a legal document to generate a concise summary. "
-    "Always verify the summary against the original contract."
-)
+st.info("Supported formats: PDF and TXT")
 
 @st.cache_resource
-def load_summarizer():
-    model_name = "sshleifer/distilbart-cnn-12-6"
+def load_model():
     return pipeline(
         "summarization",
-        model=model_name,
-        device=0 if torch.cuda.is_available() else -1
+        model="sshleifer/distilbart-cnn-12-6",
+        device=-1
     )
 
-def extract_text(uploaded_file):
-    if uploaded_file.name.lower().endswith(".pdf"):
-        reader = PdfReader(uploaded_file)
+def extract_text(file):
+    if file.name.lower().endswith(".pdf"):
+        reader = PdfReader(io.BytesIO(file.getvalue()))
         return "\n".join(
             page.extract_text() or "" for page in reader.pages
         )
-    return uploaded_file.getvalue().decode("utf-8", errors="ignore")
 
-def summarize_text(text):
-    summarizer = load_summarizer()
+    return file.getvalue().decode("utf-8", errors="ignore")
+
+def split_text(text, max_words=350):
     words = text.split()
-    chunks = []
-    current = []
+    return [
+        " ".join(words[i:i + max_words])
+        for i in range(0, len(words), max_words)
+    ]
 
-    for word in words:
-        current.append(word)
-        if len(current) >= 450:
-            chunks.append(" ".join(current))
-            current = []
-
-    if current:
-        chunks.append(" ".join(current))
-
-    summaries = []
-    for chunk in chunks:
-        result = summarizer(
-            chunk,
-            max_length=120,
-            min_length=30,
-            do_sample=False,
-            truncation=True
-        )
-        summaries.append(result[0]["summary_text"])
-
-    if len(summaries) > 1:
-        combined = " ".join(summaries)
-        final = summarizer(
-            combined,
-            max_length=180,
-            min_length=40,
-            do_sample=False,
-            truncation=True
-        )
-        return final[0]["summary_text"]
-
-    return summaries[0] if summaries else "No text to summarize."
-
-uploaded_file = st.file_uploader(
-    "Upload your legal document",
-    type=["pdf", "txt"]
+uploaded = st.file_uploader(
+    "Choose your legal document",
+    type=["pdf", "txt"],
+    key="legal_upload"
 )
 
-if uploaded_file:
-    if st.button("📄 Extract Document Text"):
-        text = extract_text(uploaded_file)
-        st.session_state["document_text"] = text
+if uploaded is not None:
+    st.success(f"Uploaded: {uploaded.name}")
 
-    if "document_text" in st.session_state:
-        text = st.session_state["document_text"]
+    try:
+        text = extract_text(uploaded)
 
         if not text.strip():
-            st.error("No readable text found in this document.")
+            st.error(
+                "No readable text found. This may be a scanned PDF. "
+                "Try a text-based PDF or TXT file."
+            )
         else:
-            st.success(f"Document loaded: {len(text.split())} words")
+            st.success(f"Extracted {len(text.split())} words.")
 
-            with st.expander("Preview extracted text"):
+            with st.expander("View extracted document text"):
                 st.text_area(
-                    "Document content",
-                    text[:10000],
+                    "Document text",
+                    text[:12000],
                     height=250
                 )
 
-            if st.button("✨ Generate Summary"):
-                with st.spinner("Generating summary..."):
-                    try:
-                        st.session_state["summary"] = summarize_text(text)
-                    except Exception as e:
-                        st.error(f"Summarization failed: {e}")
+            if st.button("✨ Generate Summary", type="primary"):
+                try:
+                    with st.spinner(
+                        "Loading AI model and generating summary..."
+                    ):
+                        summarizer = load_model()
+                        chunks = split_text(text)
+                        summaries = []
 
-            if "summary" in st.session_state:
-                st.subheader("📝 Generated Summary")
-                st.write(st.session_state["summary"])
-                st.download_button(
-                    "Download Summary",
-                    st.session_state["summary"],
-                    file_name="legal_summary.txt",
-                    mime="text/plain"
-                )
+                        for chunk in chunks:
+                            result = summarizer(
+                                chunk,
+                                max_length=110,
+                                min_length=25,
+                                do_sample=False,
+                                truncation=True
+                            )
+                            summaries.append(
+                                result[0]["summary_text"]
+                            )
+
+                        combined = " ".join(summaries)
+
+                        if len(summaries) > 1:
+                            final_result = summarizer(
+                                combined,
+                                max_length=180,
+                                min_length=35,
+                                do_sample=False,
+                                truncation=True
+                            )
+                            summary = final_result[0]["summary_text"]
+                        else:
+                            summary = combined
+
+                    st.subheader("📝 Generated Summary")
+                    st.write(summary)
+
+                    st.download_button(
+                        "⬇️ Download Summary",
+                        data=summary,
+                        file_name="legal_summary.txt",
+                        mime="text/plain"
+                    )
+
+                except Exception as e:
+                    st.error("The AI model could not generate a summary.")
+                    st.write(f"Error details: {str(e)[:1000]}")
+                    st.info(
+                        "If this is a memory or model-loading error, "
+                        "we may need a smaller model or a different host."
+                    )
+
+    except Exception as e:
+        st.error("Could not read this document.")
+        st.write(str(e)[:1000])
 
 st.divider()
 st.caption(
-    "Educational prototype only. This tool does not provide legal advice "
-    "or guarantee that every contractual obligation is captured."
+    "Educational prototype only. Verify all summaries against "
+    "the original contract. This application does not provide legal advice."
 )
-
